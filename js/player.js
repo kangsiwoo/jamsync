@@ -227,17 +227,69 @@ export class SyncPlayer {
     }
   }
 
-  _beep(when, freq) {
+  _beep(when, freq, dest = this.gain) {
     const osc = this.ctx.createOscillator();
     const g = this.ctx.createGain();
     osc.frequency.value = freq;
     g.gain.setValueAtTime(0, when);
     g.gain.linearRampToValueAtTime(0.8, when + 0.002);
     g.gain.exponentialRampToValueAtTime(0.001, when + 0.05);
-    osc.connect(g).connect(this.gain);
+    osc.connect(g).connect(dest);
     osc.start(when);
     osc.stop(when + 0.06);
   }
+
+  /** 출력 지연(초): 지금 렌더링하는 소리가 실제로 스피커/이어폰에서 나오기까지. 블루투스 추가 지연은 대개 포함 안 됨 */
+  get outputLatencyS() {
+    if (!this.ctx || this._map === null) return 0;
+    return Math.max(0, this.ctx.currentTime - (performance.now() / 1000 + this._map));
+  }
+
+  // ---------- 지연 자동 측정 (박자 맞춰 탭하기) ----------
+
+  /**
+   * 사용자 지연 보정 없이 로컬 시계 기준으로 딸깍 count번.
+   * 반환: 각 클릭이 "보정 없이" 귀에 들려야 하는 perf 시각(ms) 배열 + 취소 함수.
+   * 사용자가 들은 소리에 맞춰 탭한 시각과의 차이 ≈ 이 폰+이어폰의 추가 지연.
+   */
+  startCalibration(count = 20, intervalMs = 600, startInMs = 1000) {
+    for (let i = 0; i < 5; i++) this._sampleMap();
+    const out = this.ctx.createGain();
+    out.connect(this.gain);
+    const t0 = performance.now() + startInMs;
+    const times = [];
+    for (let i = 0; i < count; i++) {
+      const perf = t0 + i * intervalMs;
+      times.push(perf);
+      this._beep(perf / 1000 + this._map, i % 4 === 0 ? 1760 : 880, out);
+    }
+    return { times, cancel: () => out.disconnect() };
+  }
+}
+
+/** 탭 시각들과 클릭 시각들로 지연(ms) 추정. 앞 warmup개 박자는 버림. 데이터가 부족하면 null */
+export function estimateTapLatency(clickTimes, tapTimes, { warmup = 4, intervalMs = 600 } = {}) {
+  const diffs = [];
+  for (const tap of tapTimes) {
+    let best = -1;
+    let bestD = Infinity;
+    clickTimes.forEach((c, i) => {
+      const d = tap - c;
+      if (Math.abs(d) < Math.abs(bestD)) {
+        bestD = d;
+        best = i;
+      }
+    });
+    if (best >= warmup && Math.abs(bestD) < intervalMs / 2) diffs.push(bestD);
+  }
+  if (diffs.length < 6) return null;
+  const med = (a) => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)];
+  const m0 = med(diffs);
+  const kept = diffs.filter((d) => Math.abs(d - m0) < 100);
+  if (kept.length < 6) return null;
+  const m = med(kept);
+  const spread = Math.sqrt(kept.reduce((s, d) => s + (d - m) ** 2, 0) / kept.length);
+  return { latencyMs: Math.round(m / 5) * 5, spreadMs: Math.round(spread), n: kept.length };
 }
 
 /** 테스트 음원: 120BPM 클릭 + 마디마다 높은 음, 길이 sec초짜리 WAV ArrayBuffer */

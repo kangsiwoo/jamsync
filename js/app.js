@@ -1,8 +1,10 @@
 import { ClockSync, identityClock } from './clock.js';
-import { SyncPlayer, makeTestTrack } from './player.js';
+import { SyncPlayer, makeTestTrack, estimateTapLatency } from './player.js';
 import { HostRoom, MemberRoom } from './net.js';
+import { YouTubeSync, parseYouTubeId } from './ytplayer.js';
 
 const LEAD_MS = 1500; // 재생 명령 후 실제 시작까지 여유 (셀룰러 왕복 지연 감안)
+const YT_LEAD_MS = 2500; // 유튜브는 버퍼링 여유를 더 둔다
 const $ = (id) => document.getElementById(id);
 const store = {
   get(k, d) {
@@ -23,9 +25,18 @@ const store = {
 // ---------- 상태 ----------
 const clock = new ClockSync();
 const player = new SyncPlayer(identityClock);
+const yt = new YouTubeSync(document.getElementById('yt'), {
+  clock: identityClock,
+  leadS: () => player.userLatencyMs / 1000 + player.outputLatencyS,
+});
+yt.onChange = () => {
+  render();
+  sendStatus();
+  refreshMembers();
+};
 let room = null;
 let isHost = false;
-let song = null; // { id, name, duration, buf?(방장만), mime }
+let song = null; // { kind:'file'|'yt', id, name, duration, buf?(방장만), mime, videoId? }
 let curState = { mode: 'stopped', pos: 0, seq: 0, fileId: null }; // 방장 시각 기준
 let lastSeq = -1;
 let incoming = null; // 멤버: 받는 중인 파일
@@ -45,7 +56,12 @@ const fmt = (s, tenths = true) => {
 const hostNow = () => (isHost ? performance.now() : clock.toRemote(performance.now()));
 const posAt = (st, hostT) => (st.mode === 'playing' ? st.pos + (hostT - st.hostT0) / 1000 : st.pos);
 const clampPos = (p) => Math.max(0, Math.min(p, song ? song.duration : 0));
-const fileStatus = () => (song && decodedForId === song.id ? 'ready' : incoming ? Math.round((incoming.got / incoming.chunks) * 100) : 'none');
+const isYt = () => song?.kind === 'yt';
+const songReady = () => !!song && (isYt() ? yt.ready && yt.videoId === song.videoId : decodedForId === song.id);
+const fileStatus = () => {
+  if (isYt()) return songReady() ? (yt.primed ? 'ready' : 'tap') : 'loading';
+  return song && decodedForId === song.id ? 'ready' : incoming ? Math.round((incoming.got / incoming.chunks) * 100) : 'none';
+};
 
 function setConn(text, cls = '') {
   const el = $('conn');
@@ -106,6 +122,7 @@ $('btn-create').onclick = async () => {
     room = r;
     isHost = true;
     player.setClock(identityClock);
+    yt.setClock(identityClock);
     wireHost(r);
     enterRoom(code);
   } catch (e) {
@@ -129,6 +146,7 @@ $('btn-join').onclick = async () => {
     room = r;
     isHost = false;
     player.setClock(clock);
+    yt.setClock(clock);
     enterRoom(code);
   } catch (e) {
     homeMsg(e.message);
@@ -195,7 +213,8 @@ $('btn-invite').onclick = () => $('invite').classList.toggle('hidden');
 function wireHost(r) {
   r.on('join', (m) => {
     r.send(m, { t: 'welcome', hostName: r.name });
-    if (song) r.sendFile(m, song);
+    if (isYt()) r.send(m, ytLoadMsg());
+    else if (song) r.sendFile(m, song);
     r.send(m, { t: 'state', state: curState });
     refreshMembers();
   });
@@ -227,8 +246,9 @@ function refreshMembers() {
 }
 
 function hostCommand(action, arg) {
-  if (!song || decodedForId !== song.id) return;
+  if (!songReady()) return;
   const now = performance.now();
+  const lead = isYt() ? YT_LEAD_MS : LEAD_MS;
   const cur = clampPos(posAt(curState, now));
   const playing = curState.mode === 'playing';
   let next;
@@ -236,14 +256,14 @@ function hostCommand(action, arg) {
     case 'toggle':
       return hostCommand(playing ? 'pause' : 'play');
     case 'play':
-      next = { mode: 'playing', pos: cur >= song.duration - 0.05 ? 0 : cur, hostT0: now + LEAD_MS };
+      next = { mode: 'playing', pos: cur >= song.duration - 0.05 ? 0 : cur, hostT0: now + lead };
       break;
     case 'pause':
       next = { mode: 'paused', pos: cur };
       break;
     case 'seek': {
       const p = clampPos(Number(arg) || 0);
-      next = playing ? { mode: 'playing', pos: p, hostT0: now + LEAD_MS } : { mode: 'paused', pos: p };
+      next = playing ? { mode: 'playing', pos: p, hostT0: now + lead } : { mode: 'paused', pos: p };
       break;
     }
     case 'nudge':
@@ -274,8 +294,9 @@ async function hostLoadFile(name, mime, buf) {
     alert('이 파일은 재생할 수 없어요. mp3, m4a, wav 파일을 써 보세요.');
     return;
   }
+  if (yt.videoId) yt.unload();
   player.setBuffer(audio);
-  song = { id, name, mime, buf, duration: audio.duration };
+  song = { kind: 'file', id, name, mime, buf, duration: audio.duration };
   decodedForId = id;
   setState({ mode: 'stopped', pos: 0, fileId: id });
   for (const m of room.members.values()) room.sendFile(m, song);
@@ -289,6 +310,34 @@ $('file').onchange = async (e) => {
   if (!f) return;
   if (f.size > 60 * 1024 * 1024) return alert('파일이 너무 커요 (60MB 이하).');
   hostLoadFile(f.name, f.type, await f.arrayBuffer());
+};
+
+const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+const ytLoadMsg = () => ({ t: 'yt-load', id: song.id, videoId: song.videoId, name: song.name, duration: song.duration });
+
+$('btn-yt').onclick = async () => {
+  const url = prompt('유튜브 링크를 붙여 넣으세요');
+  if (url == null) return;
+  const videoId = parseYouTubeId(url);
+  if (!videoId) return alert('유튜브 링크를 알아볼 수 없어요.');
+  $('song-name').textContent = '유튜브 불러오는 중…';
+  $('yt-wrap').classList.remove('hidden');
+  let info;
+  try {
+    info = await yt.load(videoId);
+  } catch (e) {
+    alert(e.message);
+    render();
+    return;
+  }
+  for (const m of room.members.values()) m.xfer = null; // 진행 중인 파일 전송 중단
+  player.setBuffer(null);
+  decodedForId = null;
+  song = { kind: 'yt', id: newId(), videoId, name: info.title, duration: info.duration };
+  setState({ mode: 'stopped', pos: 0, fileId: song.id });
+  room.broadcast(ytLoadMsg());
+  render();
+  refreshMembers();
 };
 
 $('btn-test-track').onclick = () => hostLoadFile('테스트 음원 (120BPM 클릭)', 'audio/wav', makeTestTrack(90));
@@ -355,9 +404,24 @@ function onMemberMessage(d) {
       curState = d.state;
       applyState();
       break;
+    case 'yt-load':
+      incoming = null;
+      player.setBuffer(null);
+      decodedForId = null;
+      song = { kind: 'yt', id: d.id, videoId: d.videoId, name: d.name, duration: d.duration };
+      render();
+      yt.load(d.videoId)
+        .then(() => {
+          render();
+          sendStatus();
+          applyState();
+        })
+        .catch((e) => ($('song-name').textContent = e.message));
+      break;
     case 'file-meta':
+      if (yt.videoId) yt.unload();
       incoming = { ...d, parts: new Array(d.chunks), got: 0 };
-      song = { id: d.id, name: d.name, duration: d.duration, mime: d.mime };
+      song = { kind: 'file', id: d.id, name: d.name, duration: d.duration, mime: d.mime };
       decodedForId = null;
       player.setBuffer(null);
       render();
@@ -399,11 +463,15 @@ async function finishIncoming() {
 // ---------- 재생 반영 ----------
 function applyState() {
   const st = curState;
-  const ready = song && decodedForId === song.id && st.fileId === song.id && (isHost || clock.ready) && player.buffer;
-  if (!ready || st.mode !== 'playing') {
+  const ready = songReady() && st.fileId === song.id && (isHost || clock.ready);
+  const playing = ready && st.mode === 'playing';
+  if (isYt()) {
     player.stop(st.pos || 0);
+    if (playing) yt.play(st.pos, st.hostT0);
+    else if (yt.ready) yt.stop(st.pos || 0);
   } else {
-    player.play(st.pos, st.hostT0);
+    if (playing && player.buffer) player.play(st.pos, st.hostT0);
+    else player.stop(st.pos || 0);
   }
   render();
 }
@@ -444,8 +512,10 @@ $('lat-plus').onclick = () => setLatency(player.userLatencyMs + 5);
 
 const vol = store.get('vol', 1);
 $('vol').value = vol;
+yt.setVolume(vol);
 $('vol').oninput = () => {
   player.setVolume(Number($('vol').value));
+  yt.setVolume(Number($('vol').value));
   store.set('vol', Number($('vol').value));
 };
 setTimeout(() => player.setVolume(vol), 0);
@@ -461,8 +531,11 @@ $('btn-click').onclick = () => {
 
 // ---------- 렌더링 ----------
 function render() {
-  const has = !!song && decodedForId === song.id;
-  $('song-name').textContent = song ? song.name : isHost ? '음악 파일을 골라주세요' : '방장이 곡을 고르길 기다리는 중';
+  const has = songReady();
+  $('song-name').textContent = song ? (isYt() ? '▶ ' : '') + song.name : isHost ? '음악 파일이나 유튜브를 골라주세요' : '방장이 곡을 고르길 기다리는 중';
+  $('yt-wrap').classList.toggle('hidden', !isYt());
+  $('yt-note').classList.toggle('hidden', !isYt());
+  $('yt-hint').classList.toggle('hidden', !(isYt() && has && !yt.primed));
   if (incoming) {
     $('xfer').classList.remove('hidden');
     $('xfer').firstElementChild.style.width = (incoming.got / incoming.chunks) * 100 + '%';
@@ -491,7 +564,16 @@ function renderMembers() {
     }
     const meta = document.createElement('span');
     meta.className = 'meta';
-    const file = m.file === 'ready' ? '<span class="good">곡 ✓</span>' : typeof m.file === 'number' ? `받는 중 ${m.file}%` : '<span class="dim">곡 없음</span>';
+    const file =
+      m.file === 'ready'
+        ? '<span class="good">곡 ✓</span>'
+        : m.file === 'tap'
+          ? '<span class="meh">영상 탭 필요</span>'
+          : m.file === 'loading'
+            ? '<span class="dim">불러오는 중</span>'
+            : typeof m.file === 'number'
+              ? `받는 중 ${m.file}%`
+              : '<span class="dim">곡 없음</span>';
     let sync = '';
     if (!m.host) {
       if (m.err == null) sync = ' · <span class="meh">시계 맞추는 중</span>';
@@ -523,9 +605,80 @@ function frame() {
   $('diag').textContent =
     `오디오 ${player.ctx?.state ?? '-'} · 출력지연 ${map != null && player.ctx ? Math.round((player.ctx.currentTime - performance.now() / 1000 - map) * 1000) : '-'}ms` +
     (isHost ? '' : ` · 시계 ±${Number.isFinite(clock.error) ? clock.error.toFixed(1) : '-'}ms (${clock.samples.length})`) +
-    (st.mode === 'playing' ? ` · 재생오차 ${player.lastErrMs.toFixed(1)}ms` : '');
+    (st.mode === 'playing' ? ` · 재생오차 ${(isYt() ? yt.lastErrMs : player.lastErrMs).toFixed(1)}ms` : '');
   requestAnimationFrame(frame);
 }
 
+// ---------- 지연 자동 측정 ----------
+const CAL_N = 20;
+const CAL_INT = 600;
+let cal = null;
+
+function tapTime(e) {
+  // 이벤트 timeStamp는 performance.now와 같은 시간축 (더 정확). 이상하면 now로 대체
+  const now = performance.now();
+  return Math.abs(e.timeStamp - now) < 1000 ? e.timeStamp : now;
+}
+
+$('btn-cal').onclick = () => {
+  player.unlock();
+  if (player.clicksOn) $('btn-click').click();
+  if (curState.mode === 'playing') return alert('재생을 멈춘 뒤에 측정하세요.');
+  $('cal-overlay').classList.remove('hidden');
+  $('cal-title').textContent = '이어폰을 끼고, 딸깍 소리에 맞춰 탭하세요';
+  $('cal-sub').textContent = '20번 딸깍거려요. 앞의 4번은 연습이에요. 들리는 순간에 맞춰 큰 버튼을 누르세요.';
+  $('cal-apply').classList.add('hidden');
+  $('cal-pad').disabled = false;
+  $('cal-pad').textContent = '탭';
+  const run = player.startCalibration(CAL_N, CAL_INT, 1000);
+  cal = { ...run, taps: [], result: null };
+  cal.timer = setTimeout(finishCal, run.times[CAL_N - 1] - performance.now() + 500);
+};
+
+$('cal-pad').addEventListener('pointerdown', (e) => {
+  if (!cal || cal.result) return;
+  e.preventDefault();
+  cal.taps.push(tapTime(e));
+  $('cal-pad').textContent = `${cal.taps.length}`;
+  $('cal-pad').classList.add('hit');
+  setTimeout(() => $('cal-pad').classList.remove('hit'), 80);
+});
+
+function finishCal() {
+  if (!cal) return;
+  const r = estimateTapLatency(cal.times, cal.taps, { warmup: 4, intervalMs: CAL_INT });
+  $('cal-pad').disabled = true;
+  if (!r) {
+    $('cal-title').textContent = '탭이 너무 적거나 박자가 안 맞았어요';
+    $('cal-sub').textContent = '다시 해 보세요. 소리가 들리는 순간에 맞춰 꾸준히 누르면 돼요.';
+    $('cal-pad').textContent = '—';
+    cal.result = { failed: true };
+    return;
+  }
+  cal.result = r;
+  const v = Math.max(-100, Math.min(400, r.latencyMs));
+  $('cal-title').textContent = `측정값 ${v > 0 ? '+' : ''}${v}ms`;
+  $('cal-sub').textContent =
+    `탭 ${r.n}번, 흔들림 ±${r.spreadMs}ms. ` +
+    (r.spreadMs > 40 ? '흔들림이 커서 정확하지 않을 수 있어요. 한 번 더 해 보는 걸 추천해요. ' : '') +
+    '적용한 뒤 클릭 테스트로 다른 폰과 겹치는지 확인하세요.';
+  $('cal-pad').textContent = `${v > 0 ? '+' : ''}${v}ms`;
+  $('cal-apply').classList.remove('hidden');
+}
+
+$('cal-apply').onclick = () => {
+  if (cal?.result?.latencyMs != null) setLatency(Math.round(cal.result.latencyMs / 5) * 5);
+  closeCal();
+};
+$('cal-cancel').onclick = closeCal;
+function closeCal() {
+  if (cal) {
+    clearTimeout(cal.timer);
+    cal.cancel();
+  }
+  cal = null;
+  $('cal-overlay').classList.add('hidden');
+}
+
 // 디버깅용
-window.__jam = { player, clock, get room() { return room; }, get state() { return curState; }, get song() { return song; } };
+window.__jam = { player, clock, yt, estimateTapLatency, get room() { return room; }, get state() { return curState; }, get song() { return song; } };

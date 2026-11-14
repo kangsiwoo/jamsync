@@ -63,10 +63,14 @@
         <div id="song-name" class="song-name">곡 없음</div>
         <div id="host-file" class="file-btns hidden">
           <label class="btn small">파일 선택<input type="file" id="file" accept="audio/*,.mp3,.m4a,.wav,.aac,.ogg,.flac" hidden></label>
-          <button id="btn-test-track" class="small ghost">테스트 음원</button>
+          <button id="btn-yt" class="small">유튜브</button>
+          <button id="btn-test-track" class="small ghost">테스트</button>
         </div>
       </div>
       <div id="xfer" class="progress hidden"><div></div></div>
+      <div id="yt-wrap" class="yt hidden"><div id="yt"></div></div>
+      <p id="yt-hint" class="hint warn-text hidden">영상의 ▶를 한 번 눌러 주세요. (휴대폰은 한 번 직접 눌러야 원격 재생이 허용돼요. 누르면 바로 멈춥니다.)</p>
+      <p id="yt-note" class="hint hidden">유튜브 모드는 파일 모드보다 덜 정확해요(수십 ms). 광고가 나오면 그 폰만 어긋날 수 있어요.</p>
       <div class="time">
         <span id="t-cur">0:00.0</span>
         <span id="t-dur" class="dim">/ 0:00</span>
@@ -96,18 +100,31 @@
         <span>지연 보정 <b id="lat-val">0ms</b></span>
         <input type="range" id="lat" min="-100" max="400" step="5" value="0">
       </label>
+      <button id="btn-cal" class="wide">탭으로 자동 측정</button>
       <div class="row">
         <button id="lat-minus" class="small">-5ms</button>
         <button id="btn-click" class="wide">클릭 테스트 켜기</button>
         <button id="lat-plus" class="small">+5ms</button>
       </div>
       <p class="hint">
-        블루투스 이어폰은 소리가 0.1~0.3초 늦게 나와요. 클릭 테스트를 켜고 유선 이어폰(또는 스피커) 쓰는 폰 옆에서
-        딸깍 소리가 하나로 겹칠 때까지 지연 보정을 오른쪽(+)으로 옮기세요. 유선 이어폰이면 0 그대로 두세요.
+        블루투스 이어폰은 소리가 0.1~0.3초 늦게 나와요. 이어폰을 끼고 <b>탭으로 자동 측정</b>을 하면 대략 맞춰지고,
+        그다음 클릭 테스트를 켜서 다른 폰과 딸깍 소리가 겹치도록 ±5ms로 다듬으세요. 유선 이어폰이면 0 근처면 돼요.
       </p>
       <p id="diag" class="diag"></p>
     </section>
   </main>
+
+  <div id="cal-overlay" class="overlay cal hidden">
+    <div class="cal-box">
+      <h2 id="cal-title">이어폰을 끼고, 딸깍 소리에 맞춰 탭하세요</h2>
+      <p id="cal-sub" class="hint">20번 딸깍거려요. 앞의 몇 번은 연습이에요. 소리를 예상하지 말고 들리는 순간에 맞춰 누르세요.</p>
+      <button id="cal-pad" class="cal-pad">탭</button>
+      <div class="row">
+        <button id="cal-cancel" class="wide">취소</button>
+        <button id="cal-apply" class="wide primary hidden">적용</button>
+      </div>
+    </div>
+  </div>
 
   <div id="tap-overlay" class="overlay hidden">
     <button id="btn-tap" class="primary big-tap">탭해서 소리 켜기</button>
