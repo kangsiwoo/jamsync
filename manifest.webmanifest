@@ -1,0 +1,10 @@
+{
+  "name": "합주싱크",
+  "short_name": "합주싱크",
+  "description": "각자 이어폰으로 같은 타이밍에 음악을 재생하는 합주 도우미",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#101216",
+  "theme_color": "#101216",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
