@@ -114,3 +114,20 @@ button.small, .btn.small { padding: 8px 12px; font-size: 14px; border-radius: 10
 }
 .cal-pad.hit { background: var(--accent); color: var(--accent-ink); transform: none; }
 .cal-pad:active { transform: none; }
+
+.metro-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.metro-head h2 { margin: 0; }
+.metro-head h2 .dim { font-weight: 400; }
+.metro-bpm { display: grid; grid-template-columns: 1fr 1.6fr 1fr; gap: 8px; align-items: center; }
+.metro-bpm .ctl { font-size: 26px; padding: 10px 0; }
+.bpm { text-align: center; font-variant-numeric: tabular-nums; }
+.bpm span { font-size: 44px; font-weight: 700; letter-spacing: -0.02em; }
+.bpm small { color: var(--dim); margin-left: 6px; font-size: 14px; }
+.seg { display: grid; grid-template-columns: repeat(4, 1fr) 1.6fr; gap: 6px; margin: 6px 0 12px; }
+.seg button { padding: 10px 0; font-size: 14px; }
+.seg button.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+.beat-dots { display: flex; justify-content: center; gap: 10px; min-height: 22px; margin-bottom: 12px; }
+.beat-dots i { width: 18px; height: 18px; border-radius: 50%; background: var(--line); transition: background 0.04s; }
+.beat-dots i.cur { background: #4a505b; }
+.beat-dots i.flash { background: var(--text); }
+.beat-dots i.accent.flash { background: var(--accent); }

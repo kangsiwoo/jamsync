@@ -26,6 +26,10 @@ export class SyncPlayer {
     this.lastErrMs = 0;
     this.clicksOn = false;
     this._lastClickK = -Infinity;
+    this.metro = null; // { on, bpm, beats, start(방장 시각 ms) }
+    this.metroVol = 0.8;
+    this._metroOut = null;
+    this._metroLastK = -Infinity;
     this._map = null;
     this._mapSamples = [];
     this._timer = null;
@@ -180,6 +184,7 @@ export class SyncPlayer {
     if (!this.ctx) return;
     this._sampleMap();
     this._clicks();
+    this._metronome();
     if (this.st.mode !== 'playing' || !this.src || !this.anchor) return;
 
     const c = this.ctx.currentTime;
@@ -227,12 +232,60 @@ export class SyncPlayer {
     }
   }
 
-  _beep(when, freq, dest = this.gain) {
+  // ---------- 전역 메트로놈 (방장 시계 격자: start + k * 60000/bpm) ----------
+
+  setMetronome(m) {
+    const cur = this.metro;
+    const on = !!(m && m.on);
+    if (!on && !cur) return;
+    if (on && cur && cur.bpm === m.bpm && cur.beats === m.beats && cur.start === m.start) return;
+    // 이미 예약해 둔 딸깍(최대 1.5초 앞)은 출력 노드째 끊어서 취소
+    this._metroOut?.disconnect();
+    this._metroOut = null;
+    this._metroLastK = -Infinity;
+    this.metro = on ? { ...m } : null;
+    this._metronome();
+  }
+
+  setMetronomeVolume(v) {
+    this.metroVol = v;
+    if (this._metroOut) this._metroOut.gain.value = v;
+  }
+
+  /** 지금 방장 시각 기준 몇 번째 박인지 (시작 전이면 음수) */
+  metroBeatAt(hostMs) {
+    const m = this.metro;
+    if (!m) return null;
+    return (hostMs - m.start) / (60000 / m.bpm);
+  }
+
+  _metronome() {
+    const m = this.metro;
+    if (!m || !this.ctx || !this.clock.ready) return;
+    if (!this._metroOut) {
+      this._metroOut = this.ctx.createGain();
+      this._metroOut.gain.value = this.metroVol;
+      this._metroOut.connect(this.ctx.destination); // 곡 볼륨과 별개
+    }
+    const interval = 60000 / m.bpm;
+    const nowHost = this.clock.toRemote(performance.now());
+    let k = Math.max(this._metroLastK + 1, Math.ceil((nowHost + 30 - m.start) / interval), 0);
+    // 백그라운드에서 타이머가 1초로 느려져도 끊기지 않게 1.5초 앞까지 예약
+    for (; m.start + k * interval <= nowHost + 1500; k++) {
+      this._metroLastK = k;
+      const when = this.hostToCtx(m.start + k * interval);
+      if (when < this.ctx.currentTime + 0.01) continue;
+      const accent = m.beats > 1 && k % m.beats === 0;
+      this._beep(when, accent ? 1500 : 1000, this._metroOut, accent ? 1 : 0.55);
+    }
+  }
+
+  _beep(when, freq, dest = this.gain, amp = 0.8) {
     const osc = this.ctx.createOscillator();
     const g = this.ctx.createGain();
     osc.frequency.value = freq;
     g.gain.setValueAtTime(0, when);
-    g.gain.linearRampToValueAtTime(0.8, when + 0.002);
+    g.gain.linearRampToValueAtTime(amp, when + 0.002);
     g.gain.exponentialRampToValueAtTime(0.001, when + 0.05);
     osc.connect(g).connect(dest);
     osc.start(when);

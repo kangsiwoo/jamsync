@@ -85,6 +85,31 @@
       <div id="countdown" class="countdown"></div>
     </section>
 
+    <section class="card metro">
+      <div class="metro-head">
+        <h2>메트로놈 <span class="dim">· 모두에게 같은 박자</span></h2>
+        <button id="metro-toggle" class="small primary">시작</button>
+      </div>
+      <div class="metro-bpm">
+        <button id="bpm-minus" class="ctl" aria-label="템포 내리기">−</button>
+        <div class="bpm"><span id="bpm-val">120</span><small>BPM</small></div>
+        <button id="bpm-plus" class="ctl" aria-label="템포 올리기">+</button>
+      </div>
+      <input type="range" id="bpm" min="30" max="300" step="1" value="120" aria-label="템포">
+      <div class="seg" id="beats-seg">
+        <button data-beats="2">2/4</button>
+        <button data-beats="3">3/4</button>
+        <button data-beats="4">4/4</button>
+        <button data-beats="6">6/8</button>
+        <button id="btn-taptempo">탭 템포</button>
+      </div>
+      <div id="beat-dots" class="beat-dots" aria-hidden="true"></div>
+      <label class="field">
+        <span>내 폰 메트로놈 볼륨 <b id="metro-vol-val">80%</b></span>
+        <input type="range" id="metro-vol" min="0" max="1" step="0.01" value="0.8">
+      </label>
+    </section>
+
     <section class="card">
       <h2>멤버</h2>
       <ul id="members" class="members"></ul>

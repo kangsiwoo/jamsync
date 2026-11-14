@@ -246,6 +246,7 @@ function refreshMembers() {
 }
 
 function hostCommand(action, arg) {
+  if (action === 'metro') return hostMetro(arg);
   if (!songReady()) return;
   const now = performance.now();
   const lead = isYt() ? YT_LEAD_MS : LEAD_MS;
@@ -278,9 +279,30 @@ function hostCommand(action, arg) {
 }
 
 function setState(st) {
-  curState = { ...st, seq: (curState.seq || 0) + 1 };
+  curState = { ...st, metro: 'metro' in st ? st.metro : curState.metro, seq: (curState.seq || 0) + 1 };
   room.broadcastState(curState);
   applyState();
+}
+
+// ---------- 메트로놈 (방장이 결정, 상태에 포함해 모두에게) ----------
+const DEFAULT_METRO = { on: false, bpm: 120, beats: 4 };
+const BEATS = [2, 3, 4, 6];
+const clampBpm = (b) => Math.max(30, Math.min(300, Math.round(Number(b) || 120)));
+
+function hostMetro(arg = {}) {
+  const cur = curState.metro || DEFAULT_METRO;
+  const next = {
+    on: 'on' in arg ? !!arg.on : cur.on,
+    bpm: 'bpm' in arg ? clampBpm(arg.bpm) : cur.bpm,
+    beats: BEATS.includes(Number(arg.beats)) ? Number(arg.beats) : cur.beats,
+    start: cur.start,
+  };
+  if (next.on && (!cur.on || next.bpm !== cur.bpm || next.beats !== cur.beats)) {
+    // 새로 시작하거나 템포/박자가 바뀌면 잠깐 뒤 새 마디 1박부터
+    next.start = performance.now() + (cur.on ? 600 : 1000);
+  }
+  const { seq, ...rest } = curState;
+  setState({ ...rest, metro: next });
 }
 
 async function hostLoadFile(name, mime, buf) {
@@ -463,6 +485,8 @@ async function finishIncoming() {
 // ---------- 재생 반영 ----------
 function applyState() {
   const st = curState;
+  player.setMetronome(st.metro);
+  if (!metroPending) metroDraft = null;
   const ready = songReady() && st.fileId === song.id && (isHost || clock.ready);
   const playing = ready && st.mode === 'playing';
   if (isYt()) {
@@ -495,6 +519,84 @@ $('seek').addEventListener('change', () => {
   seeking = false;
   if (song) command('seek', ($('seek').value / 1000) * song.duration);
 });
+
+// ---------- 메트로놈 조작 ----------
+let metroDraft = null; // 방장 확인 전 내 화면에 먼저 보여 줄 값
+let metroPending = null;
+const metroView = () => ({ ...DEFAULT_METRO, ...curState.metro, ...metroDraft });
+
+function sendMetro(patch, immediate = false) {
+  metroDraft = { ...metroDraft, ...patch };
+  renderMetro();
+  clearTimeout(metroPending);
+  const fire = () => {
+    metroPending = null;
+    command('metro', { ...metroDraft });
+  };
+  if (immediate) fire();
+  else metroPending = setTimeout(fire, 300); // 슬라이더 드래그 중에는 몰아서 한 번
+}
+
+$('metro-toggle').onclick = () => {
+  player.unlock();
+  sendMetro({ on: !metroView().on }, true);
+};
+$('bpm-minus').onclick = () => sendMetro({ bpm: clampBpm(metroView().bpm - 1) });
+$('bpm-plus').onclick = () => sendMetro({ bpm: clampBpm(metroView().bpm + 1) });
+$('bpm').oninput = () => sendMetro({ bpm: clampBpm($('bpm').value) });
+for (const b of document.querySelectorAll('#beats-seg [data-beats]')) {
+  b.onclick = () => sendMetro({ beats: Number(b.dataset.beats) }, true);
+}
+let tapTimes = [];
+$('btn-taptempo').addEventListener('pointerdown', (e) => {
+  const t = tapTime(e);
+  if (tapTimes.length && t - tapTimes.at(-1) > 2000) tapTimes = [];
+  tapTimes.push(t);
+  if (tapTimes.length > 6) tapTimes.shift();
+  if (tapTimes.length >= 3) sendMetro({ bpm: clampBpm(60000 / ((tapTimes.at(-1) - tapTimes[0]) / (tapTimes.length - 1))) });
+});
+
+const metroVol = store.get('metroVol', 0.8);
+$('metro-vol').value = metroVol;
+player.setMetronomeVolume(metroVol);
+$('metro-vol').oninput = () => {
+  const v = Number($('metro-vol').value);
+  player.setMetronomeVolume(v);
+  store.set('metroVol', v);
+  $('metro-vol-val').textContent = Math.round(v * 100) + '%';
+};
+$('metro-vol-val').textContent = Math.round(metroVol * 100) + '%';
+
+function renderMetro() {
+  const m = metroView();
+  $('metro-toggle').textContent = m.on ? '정지' : '시작';
+  $('metro-toggle').classList.toggle('primary', !m.on);
+  $('bpm-val').textContent = m.bpm;
+  if (document.activeElement !== $('bpm')) $('bpm').value = m.bpm;
+  for (const b of document.querySelectorAll('#beats-seg [data-beats]')) b.classList.toggle('on', Number(b.dataset.beats) === m.beats);
+  const dots = $('beat-dots');
+  if (dots.childElementCount !== m.beats) {
+    dots.replaceChildren(
+      ...Array.from({ length: m.beats }, (_, i) => {
+        const d = document.createElement('i');
+        if (i === 0) d.className = 'accent';
+        return d;
+      }),
+    );
+  }
+}
+
+function renderBeat(hn) {
+  const dots = $('beat-dots').children;
+  const k = player.metroBeatAt(hn);
+  const on = k !== null && k >= 0 && (isHost || clock.ready);
+  const idx = on ? Math.floor(k) % dots.length : -1;
+  const flash = on && k - Math.floor(k) < 0.25;
+  for (let i = 0; i < dots.length; i++) {
+    dots[i].classList.toggle('cur', i === idx);
+    dots[i].classList.toggle('flash', i === idx && flash);
+  }
+}
 
 // ---------- 내 설정 ----------
 function setLatency(ms) {
@@ -547,6 +649,7 @@ function render() {
   for (const id of ['btn-play', 'btn-start', 'btn-back', 'btn-fwd', 'seek']) $(id).disabled = !has;
   $('btn-play').textContent = curState.mode === 'playing' ? '⏸' : '▶';
   $('btn-play').setAttribute('aria-label', curState.mode === 'playing' ? '일시정지' : '재생');
+  renderMetro();
 }
 
 function renderMembers() {
@@ -590,6 +693,7 @@ function frame() {
   if (!room) return;
   const hn = hostNow();
   const st = curState;
+  renderBeat(hn);
   let pos = clampPos(posAt(st, hn));
   if (st.mode === 'playing' && song) {
     const left = (st.hostT0 - hn) / 1000 - Math.min(0, st.pos);
